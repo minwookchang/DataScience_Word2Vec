@@ -86,6 +86,9 @@ void readWord(char *word, FILE *fin) {
 	word[a] = 0;
 }
 
+/*
+ * Using djb2 hash
+ */
 int getWordHash(char *word) {
 	unsigned long long a, hash = 0;
 	for(a = 0; a < strlen(word); a++) hash = hash * 257 + word[a];
@@ -172,7 +175,6 @@ void sortVocab() {
 		dict[a].huff_code = (char *)calloc(MAX_HUFF_LENGTH, sizeof(char));
 		dict[a].huff_path = (int *)calloc(MAX_HUFF_LENGTH, sizeof(int));
 	}
-}
 
 void reduceVocab() {
 	int a, b = 0;
@@ -341,10 +343,10 @@ void initNet() {
 
 	for(a = 0; a < dict_size; a++) for(b = 0; b < hidden_size; b++) {
 		next_random = next_random * (unsigned long long)25214903917 + 11;
+		/* init with  ([0.5~0.5] / hidden layer size) */
 		ih_weight[a * hidden_size + b] = (((next_random & 0xFFFF) / (real)65536) - 0.5) / hidden_size;
 	}
 	
-//	createBinaryTree();
 	assignHuffTree();
 }
 
@@ -354,7 +356,11 @@ void *trainModelThread(void *id) {
 	long long ih_index, ho_index, c, target, label, local_iter = epochs;
 	unsigned long long next_random = (long long)id;
 	real out_unit, gradient;
-
+	
+	/*
+	 * hidden_layer is only used by cbow, because we deal hidden layer as
+	 * projection layer
+	 */
 	real *hidden_layer = (real *)calloc(hidden_size, sizeof(real));
 	real *eh = (real *)calloc(hidden_size, sizeof(real));
 
@@ -371,7 +377,7 @@ void *trainModelThread(void *id) {
 			alpha = starting_alpha * (1 - word_count_actual / (real)(epochs * trained_words + 1));
 			if(alpha < starting_alpha * 0.0001) alpha = starting_alpha * 0.0001;
 		}
-
+		/* when previous loop has finished a sentence, bring new sentence */
 		if(sentence_length == 0) {
 			while(1) {
 				word = readWordIndex(fi);
@@ -379,10 +385,51 @@ void *trainModelThread(void *id) {
 				if(word == -1) continue;
 				word_count++;
 
+				/* if word is </s> then break */
 				if(word == 0) break;
 
 				if(sample > 0) {
-					real prob = (sqrt(dict[word].cn / (sample * trained_words)) + 1) * (sample * trained_words) / dict[word].cn;
+					/* Subsampling of Frequent Words
+					 * =================================
+				     * This code randomly discards training words, but is designed to 
+					 * keep the relative frequencies the same. That is, less frequent
+					 * words will be discarded less often.
+					 *
+					 * We first calculate the probability that we want to *keep* the word;
+					 * this is the value 'ran'. Then, to decide whether to keep the word,
+					 * we generate a random fraction (0.0 - 1.0), and if 'ran' is smaller
+					 * than this number, we discard the word. This means that the smaller 
+					 * 'ran' is, the more likely it is that we'll discard this word. 
+					 *
+					 * The quantity (vocab[word].cn / train_words) is the fraction of all                                                    * the training words which are 'word'. Let's represent this fraction
+					 * by x.
+					 *
+					 * Using the default 'sample' value of 0.001, the equation for ran is:
+					 * ran = (sqrt(x / 0.001) + 1) * (0.001 / x)             
+					 *
+					 * You can plot this function to see it's behavior; it has a curved 
+					 * L shape.
+			 		 * 
+					 * Here are some interesting points in this function (again this is
+					 * using the default sample value of 0.001).
+					 *   - ran = 1 (100% chance of being kept) when x <= 0.0026.
+					 *
+					 *   - That is, any word which is 0.0026 of the words *or fewer* 
+					 * will be kept 100% of the time. Only words which represent 
+					 * more than 0.26% of the total words will be subsampled.
+					 *   - ran = 0.5 (50% chance of being kept) when x = 0.00746. 
+				     *   - ran = 0.033 (3.3% chance of being kept) when x = 1.
+					 *   - That is, if a word represented 100% of the training set
+					 * (which of course would never happen), it would only be
+					 *         kept 3.3% of the time.
+					 *
+					 * NOTE: Seems like it would be more efficient to pre-calculate this 
+					 *       probability for each word and store it in the vocab table...
+					 *
+					 * Words that are discarded by subsampling aren't added to our training
+				     * 'sentence'. This means the discarded word is neither used as an 
+					 * input word or a context word for other inputs.
+					 */
 					next_random = next_random * (unsigned long long)25214903917 + 11;
 
 					if(prob < (next_random & 0xFFFF) / (real)65536) continue;
@@ -408,17 +455,21 @@ void *trainModelThread(void *id) {
 		word = sen[sentence_position];
 		if(word == -1) continue;
 
+		/* layer init */
 		for(c = 0; c < hidden_size; c++) hidden_layer[c] = 0;
 		for(c = 0; c < hidden_size; c++) eh[c] = 0;
 
 		if(cbow) {
+			/* input -> hidden */
 			cw = 0;
+			/* iterate sentence at the aspect of window size */
 			for(a = 0; a < window * 2 + 1; a++) if (a != window) {
 				c = sentence_position - window + a;
 				if(c < 0) continue;
 				if(c >= sentence_length) continue;
 				last_word = sen[c];
 				if(last_word == -1) continue;
+				/* if word is valid then propagate to hidden */
 				for(c = 0; c < hidden_size; c++) hidden_layer[c] += ih_weight[c + last_word * hidden_size];
 				cw++;
 			}
@@ -434,11 +485,21 @@ void *trainModelThread(void *id) {
 					else out_unit = sig_table[(int)((out_unit + MAX_SIG) * (SIG_TABLE_SIZE / MAX_SIG / 2))];
 
 					gradient = (1 - dict[word].huff_code[d] - out_unit) * alpha;
-					
+
+					/* precalculate eh/c from equation(23, 54) */
 					for(c = 0; c < hidden_size; c++) eh[c] += gradient * ho_weight_hs[c + ho_index];
+
+					/*
+					 * propagate error to ho_weight
+					 * equation(51)
+					 */
 					for(c = 0; c < hidden_size; c++) ho_weight_hs[c + ho_index] += gradient * hidden_layer[c];
 				}
 				if(negative > 0) for(d = 0; d < negative + 1; d++) {
+					/*
+					 * target is index of the word
+					 * label is 1 when it's goal word, otherwise 0
+					 */
 					if(d == 0) {
 						target = word;
 						label = 1;
@@ -455,7 +516,17 @@ void *trainModelThread(void *id) {
 					if(out_unit > MAX_SIG) gradient = (label - 1) * alpha;
 					else if(out_unit < -MAX_SIG) gradient = (label - 0) * alpha;
 					else gradient = (label - sig_table[(int)((out_unit + MAX_SIG) * (SIG_TABLE_SIZE / MAX_SIG / 2))]) * alpha;
+					/*
+					 * precalculate eh/c from equation(32, 61)
+					 * (label - sig(x) * ho_weight) := EH
+					 */
 					for(c = 0; c < hidden_size; c++) eh[c] += gradient * ho_weigth_neg[c + ho_index];
+
+					/*
+					 * propagate error to ho_layer
+					 * equation (59)
+					 * v`new = v`old - (sig(x) - label) * alpha
+					 */
 					for(c = 0; c < hidden_size; c++) ho_weigth_neg[c + ho_index] += gradient * hidden_layer[c];
 				}
 				//hidden -> in
