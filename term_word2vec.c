@@ -175,6 +175,7 @@ void sortVocab() {
 		dict[a].huff_code = (char *)calloc(MAX_HUFF_LENGTH, sizeof(char));
 		dict[a].huff_path = (int *)calloc(MAX_HUFF_LENGTH, sizeof(int));
 	}
+}
 
 void reduceVocab() {
 	int a, b = 0;
@@ -430,6 +431,7 @@ void *trainModelThread(void *id) {
 				     * 'sentence'. This means the discarded word is neither used as an 
 					 * input word or a context word for other inputs.
 					 */
+					real prob = (sqrt(dict[word].cn / (sample * trained_words)) + 1) * (sample * trained_words) / dict[word].cn;
 					next_random = next_random * (unsigned long long)25214903917 + 11;
 
 					if(prob < (next_random & 0xFFFF) / (real)65536) continue;
