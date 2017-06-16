@@ -17,16 +17,16 @@
 #include <math.h>
 #include <stdlib.h>  // for malloc()
 
-const long long max_size = 2000;         // max length of strings
+const long long MAX_SIZE = 2000;         // max length of strings
 const long long N = 40;                  // number of closest words that will be shown
 const long long max_w = 50;              // max length of vocabulary entries
 
 int main(int argc, char **argv) {
   FILE *f;
-  char st1[max_size];
+  char st1[MAX_SIZE];
   char *bestw[N];
-  char file_name[max_size], st[100][max_size];
-  float dist, len, bestd[N], vec[max_size];
+  char file_name[MAX_SIZE], st[100][MAX_SIZE];
+  float dist, len, bestd[N], vec[MAX_SIZE];
   long long words, size, a, b, c, d, cn, bi[100];
   char ch;
   float *M;
@@ -41,13 +41,18 @@ int main(int argc, char **argv) {
     printf("Input file not found\n");
     return -1;
   }
-  fscanf(f, "%lld", &words);
-  fscanf(f, "%lld", &size);
+  fscanf(f, "%lld", &words); // DictSize 
+  fscanf(f, "%lld", &size); // HiddenSize
   vocab = (char *)malloc((long long)words * max_w * sizeof(char));
-  for (a = 0; a < N; a++) bestw[a] = (char *)malloc(max_size * sizeof(char));
+  for (a = 0; a < N; a++) bestw[a] = (char *)malloc(MAX_SIZE * sizeof(char));
   M = (float *)malloc((long long)words * (long long)size * sizeof(float));
+
+
   if (M == NULL) {
     printf("Cannot allocate memory: %lld MB    %lld  %lld\n", (long long)words * size * sizeof(float) / 1048576, words, size);
+	free(vocab);
+	for (a = 0; a < N; a++) free(bestw[a]);
+	free(M);
     return -1;
   }
   for (b = 0; b < words; b++) {
@@ -66,7 +71,7 @@ int main(int argc, char **argv) {
     a = 0;
     while (1) {
       st1[a] = fgetc(stdin);
-      if ((st1[a] == '\n') || (a >= max_size - 1)) {
+      if ((st1[a] == '\n') || (a >= MAX_SIZE - 1)) {
         st1[a] = 0;
         break;
       }
@@ -132,5 +137,9 @@ int main(int argc, char **argv) {
     }
     for (a = 0; a < N; a++) printf("%50s\t\t%f\n", bestw[a], bestd[a]);
   }
+
+  free(vocab);
+  for (a = 0; a < N; a++) free(bestw[a]);
+  free(M);
   return 0;
 }
